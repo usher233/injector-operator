@@ -19,10 +19,11 @@ package controller
 import (
 	"context"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	injectorv1alpha1 "github.com/usher233/injector-operator/api/v1alpha1"
@@ -63,9 +64,16 @@ func (r *InjectorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		l.Info("unable to list Pods", "error", err)
 		return ctrl.Result{}, err
 	}
-
-	if len(podList.Items) == 0 {
-		l.Info("no Pods found")
+	ownedPods := []corev1.Pod{}
+	for _, pod := range podList.Items {
+		for _, ref := range pod.OwnerReferences {
+			if ref.UID == injector.UID {
+				ownedPods = append(ownedPods, pod)
+				break
+			}
+		}
+	}
+	if len(ownedPods) == 0 {
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "nginx-pod",
@@ -80,12 +88,17 @@ func (r *InjectorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				},
 			},
 		}
+		if err := controllerutil.SetControllerReference(injector, pod, r.Scheme); err != nil {
+			l.Error(err, "unable to set owner reference on Pod")
+			return ctrl.Result{}, err
+		}
+
 		if err := r.Client.Create(ctx, pod); err != nil {
 			l.Info("unable to create Pod", "error", err)
 			return ctrl.Result{}, err
 		}
+		l.Info("Pod created", "name", pod.Name)
 	}
-
 
 	return ctrl.Result{}, nil
 }
@@ -93,8 +106,8 @@ func (r *InjectorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // SetupWithManager sets up the controller with the Manager.
 func (r *InjectorReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-    For(&injectorv1alpha1.Injector{}).
-    Owns(&corev1.Pod{}).
-    Named("injector").
-    Complete(r)
+		For(&injectorv1alpha1.Injector{}).
+		Owns(&corev1.Pod{}).
+		Named("injector").
+		Complete(r)
 }
